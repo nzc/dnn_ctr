@@ -4,11 +4,10 @@
 Created on Dec 10, 2017
 @author: jachin,Nie
 
-A pytorch implementation of deepfm
+A pytorch implementation of AFM
 
 Reference:
-[1] DeepFM: A Factorization-Machine based Neural Network for CTR Prediction,
-    Huifeng Guo, Ruiming Tang, Yunming Yey, Zhenguo Li, Xiuqiang He.
+[1] Attentional Factorization Machines:Learning theWeight of Feature Interactions via Attention Networks
 
 """
 
@@ -32,15 +31,16 @@ import torch.backends.cudnn
     网络结构部分
 """
 
-class DeepFM(torch.nn.Module):
+class AFM(torch.nn.Module):
     """
     :parameter
     -------------
     field_size: size of the feature fields
     feature_sizes: a field_size-dim array, sizes of the feature dictionary
     embedding_size: size of the feature embedding
+    attention_size: The attention netwotk's parameter
     is_shallow_dropout: bool, shallow part(fm or ffm part) uses dropout or not?
-    dropout_shallow: an array of the size of 2, example:[0.5,0.5], the first element is for the-first order part and the second element is for the second-order part
+    dropout_shallow: an array of the size of 1, example:[0.5], the element is for the-first order part
     h_depth: deep network's hidden layers' depth
     deep_layers: a h_depth-dim array, each element is the size of corresponding hidden layers. example:[32,32] h_depth = 2
     is_deep_dropout: bool, deep part uses dropout or not?
@@ -56,7 +56,6 @@ class DeepFM(torch.nn.Module):
     random_seed: random_seed=950104 someone's birthday, my lukcy number
     use_fm: bool
     use_ffm: bool
-    use_deep: bool
     loss_type: "logloss", only
     eval_metric: roc_auc_score
     use_cuda: bool use gpu or cpu?
@@ -66,24 +65,23 @@ class DeepFM(torch.nn.Module):
 
     Attention: only support logsitcs regression
     """
-    def __init__(self,field_size, feature_sizes, embedding_size = 4, is_shallow_dropout = True, dropout_shallow = [0.5,0.5],
-                 h_depth = 2, deep_layers = [32, 32], is_deep_dropout = True, dropout_deep=[0.5, 0.5, 0.5],
-                 deep_layers_activation = 'relu', n_epochs = 64, batch_size = 256, learning_rate = 0.003,
+    def __init__(self,field_size, feature_sizes, embedding_size = 4, attention_size = 4,is_shallow_dropout = True, dropout_shallow = [0.5],
+                 is_attention_dropout = True, dropout_attention=[0.5],
+                 attention_layers_activation = 'relu', n_epochs = 64, batch_size = 256, learning_rate = 0.003,
                  optimizer_type = 'adam', is_batch_norm = False, verbose = False, random_seed = 950104, weight_decay = 0.0,
-                 use_fm = True, use_ffm = False, use_deep = True, loss_type = 'logloss', eval_metric = roc_auc_score,
+                 use_fm = True, use_ffm = False,loss_type = 'logloss', eval_metric = roc_auc_score,
                  use_cuda = True, n_class = 1, greater_is_better = True
                  ):
-        super(DeepFM, self).__init__()
+        super(AFM, self).__init__()
         self.field_size = field_size
         self.feature_sizes = feature_sizes
         self.embedding_size = embedding_size
+        self.attention_size = attention_size
         self.is_shallow_dropout = is_shallow_dropout
         self.dropout_shallow = dropout_shallow
-        self.h_depth = h_depth
-        self.deep_layers = deep_layers
-        self.is_deep_dropout = is_deep_dropout
-        self.dropout_deep = dropout_deep
-        self.deep_layers_activation = deep_layers_activation
+        self.is_attention_dropout = is_attention_dropout
+        self.dropout_attention = dropout_attention
+        self.attention_layers_activation = attention_layers_activation
         self.n_epochs = n_epochs
         self.batch_size = batch_size
         self.learning_rate = learning_rate
@@ -94,7 +92,6 @@ class DeepFM(torch.nn.Module):
         self.random_seed = random_seed
         self.use_fm = use_fm
         self.use_ffm = use_ffm
-        self.use_deep = use_deep
         self.loss_type = loss_type
         self.eval_metric = eval_metric
         self.use_cuda = use_cuda
@@ -116,25 +113,18 @@ class DeepFM(torch.nn.Module):
         if self.use_fm and self.use_ffm:
             print("only support one type only, please make sure to choose only fm or ffm part")
             exit(1)
-        elif self.use_fm and self.use_deep:
-            print("The model is deepfm(fm+deep layers)")
-        elif self.use_ffm and self.use_deep:
-            print("The model is deepffm(ffm+deep layers)")
         elif self.use_fm:
-            print("The model is fm only")
+            print("The model is afm(fm+attention layers)")
         elif self.use_ffm:
-            print("The model is ffm only")
-        elif self.use_deep:
-            print("The model is deep layers only")
+            print("The model is affm(ffm+attention layers)")
         else:
-            print("You have to choose more than one of (fm, ffm, deep) models to use")
+            print("You have to choose more than one of (fm, ffm) models to use")
             exit(1)
-
         """
             bias
         """
-        if self.use_fm or self.use_ffm:
-            self.bias = torch.nn.Parameter(torch.randn(1))
+        self.bias = torch.nn.Parameter(torch.randn(1))
+
         """
             fm part
         """
@@ -144,8 +134,6 @@ class DeepFM(torch.nn.Module):
             if self.dropout_shallow:
                 self.fm_first_order_dropout = nn.Dropout(self.dropout_shallow[0])
             self.fm_second_order_embeddings = nn.ModuleList([nn.Embedding(feature_size, self.embedding_size) for feature_size in self.feature_sizes])
-            if self.dropout_shallow:
-                self.fm_second_order_dropout = nn.Dropout(self.dropout_shallow[1])
             print("Init fm part succeed")
 
         """
@@ -157,35 +145,19 @@ class DeepFM(torch.nn.Module):
             if self.dropout_shallow:
                 self.ffm_first_order_dropout = nn.Dropout(self.dropout_shallow[0])
             self.ffm_second_order_embeddings = nn.ModuleList([nn.ModuleList([nn.Embedding(feature_size, self.embedding_size) for i in range(self.field_size)]) for feature_size in self.feature_sizes])
-            if self.dropout_shallow:
-                self.ffm_second_order_dropout = nn.Dropout(self.dropout_shallow[1])
             print("Init ffm part succeed")
 
         """
-            deep part
+            attention part
         """
-        if self.use_deep:
-            print("Init deep part")
-            if not self.use_fm and not self.use_ffm:
-                self.fm_second_order_embeddings = nn.ModuleList(
-                    [nn.Embedding(feature_size, self.embedding_size) for feature_size in self.feature_sizes])
+        print("Init attention part")
 
-            if self.is_deep_dropout:
-                self.linear_0_dropout = nn.Dropout(self.dropout_deep[0])
-
-            self.linear_1 = nn.Linear(self.field_size*self.embedding_size,deep_layers[0])
-            if self.is_batch_norm:
-                self.batch_norm_1 = nn.BatchNorm1d(deep_layers[0])
-            if self.is_deep_dropout:
-                self.linear_1_dropout = nn.Dropout(self.dropout_deep[1])
-            for i, h in enumerate(self.deep_layers[1:], 1):
-                setattr(self,'linear_'+str(i+1), nn.Linear(self.deep_layers[i-1], self.deep_layers[i]))
-                if self.is_batch_norm:
-                    setattr(self, 'batch_norm_' + str(i + 1), nn.BatchNorm1d(deep_layers[i]))
-                if self.is_deep_dropout:
-                    setattr(self, 'linear_'+str(i+1)+'_dropout', nn.Dropout(self.dropout_deep[i+1]))
-
-            print("Init deep part succeed")
+        if self.is_attention_dropout:
+            self.attention_linear_0_dropout = nn.Dropout(self.dropout_attention[0])
+        self.attention_linear_1 = nn.Linear(self.embedding_size, self.attention_size)
+        self.H = torch.nn.Parameter(torch.randn(self.attention_size))
+        self.P = torch.nn.Parameter(torch.randn(self.embedding_size))
+        print("Init attention part succeed")
 
         print "Init succeed"
 
@@ -204,15 +176,14 @@ class DeepFM(torch.nn.Module):
             if self.is_shallow_dropout:
                 fm_first_order = self.fm_first_order_dropout(fm_first_order)
 
-            # use 2xy = (x+y)^2 - x^2 - y^2 reduce calculation
-            fm_second_order_emb_arr = [(torch.sum(emb(Xi[:,i,:]),1).t()*Xv[:,i]).t() for i, emb in enumerate(self.fm_second_order_embeddings)]
-            fm_sum_second_order_emb = sum(fm_second_order_emb_arr)
-            fm_sum_second_order_emb_square = fm_sum_second_order_emb*fm_sum_second_order_emb # (x+y)^2
-            fm_second_order_emb_square = [item*item for item in fm_second_order_emb_arr]
-            fm_second_order_emb_square_sum = sum(fm_second_order_emb_square) #x^2+y^2
-            fm_second_order = (fm_sum_second_order_emb_square - fm_second_order_emb_square_sum) * 0.5
-            if self.is_shallow_dropout:
-                fm_second_order = self.fm_second_order_dropout(fm_second_order)
+
+            fm_second_order_emb_arr = [(torch.sum(emb(Xi[:, i, :]), 1).t() * Xv[:, i]).t() for i, emb in
+                                        enumerate(self.fm_second_order_embeddings)]
+            fm_wij_arr = []
+            for i in range(self.field_size):
+                for j in range(i + 1, self.field_size):
+                    fm_wij_arr.append(fm_second_order_emb_arr[i] * fm_second_order_emb_arr[j])
+
 
         """
             ffm part
@@ -227,55 +198,39 @@ class DeepFM(torch.nn.Module):
             for i in range(self.field_size):
                 for j in range(i+1, self.field_size):
                     ffm_wij_arr.append(ffm_second_order_emb_arr[i][j]*ffm_second_order_emb_arr[j][i])
-            ffm_second_order = sum(ffm_wij_arr)
-            if self.is_shallow_dropout:
-                ffm_second_order = self.ffm_second_order_dropout(ffm_second_order)
 
         """
-            deep part
+            attention part
         """
-        if self.use_deep:
-            if self.use_fm:
-                deep_emb = torch.cat(fm_second_order_emb_arr, 1)
-            elif self.use_ffm:
-                deep_emb = torch.cat([sum(ffm_second_order_embs) for ffm_second_order_embs in ffm_second_order_emb_arr], 1)
-            else:
-                deep_emb = torch.cat([(torch.sum(emb(Xi[:,i,:]),1).t()*Xv[:,i]).t() for i, emb in enumerate(self.fm_second_order_embeddings)],1)
+        if self.use_fm:
+            interaction_layer = torch.cat(fm_wij_arr, 1)
+        else:
+            interaction_layer = torch.cat(ffm_wij_arr,1)
 
-            if self.deep_layers_activation == 'sigmoid':
-                activation = F.sigmoid
-            elif self.deep_layers_activation == 'tanh':
-                activation = F.tanh
-            else:
-                activation = F.relu
-            if self.is_deep_dropout:
-                deep_emb = self.linear_0_dropout(deep_emb)
-            x_deep = self.linear_1(deep_emb)
-            if self.is_batch_norm:
-                x_deep = self.batch_norm_1(x_deep)
-            x_deep = activation(x_deep)
-            if self.is_deep_dropout:
-                x_deep = self.linear_1_dropout(x_deep)
-            for i in range(1, len(self.deep_layers)):
-                x_deep = getattr(self, 'linear_' + str(i + 1))(x_deep)
-                if self.is_batch_norm:
-                    x_deep = getattr(self, 'batch_norm_' + str(i + 1))(x_deep)
-                x_deep = activation(x_deep)
-                if self.is_deep_dropout:
-                    x_deep = getattr(self, 'linear_' + str(i + 1) + '_dropout')(x_deep)
+        if self.attention_layers_activation == 'sigmoid':
+            activation = F.sigmoid
+        elif self.attention_layers_activation == 'tanh':
+            activation = F.tanh
+        else:
+            activation = F.relu
+
+        if self.is_attention_dropout:
+            interaction_layer = self.attention_linear_0_dropout(interaction_layer)
+        attention_tmp = self.attention_linear_1(interaction_layer.view([-1,self.embedding_size]))
+        attention_tmp = attention_tmp * self.H
+        attention_tmp = torch.sum(attention_tmp,1).view([-1,self.field_size*(self.field_size-1)/2])
+        attention_weight = torch.nn.Softmax()(attention_tmp)
+        attention_output = torch.sum(interaction_layer.view([-1,self.embedding_size])* self.P,1).view([-1,self.field_size*(self.field_size-1)/2])
+        attention_output = attention_output * attention_weight
+
+
         """
             sum
         """
-        if self.use_fm and self.use_deep:
-            total_sum = torch.sum(fm_first_order,1) + torch.sum(fm_second_order,1) + torch.sum(x_deep,1) + self.bias
-        elif self.use_ffm and self.use_deep:
-            total_sum = torch.sum(ffm_first_order, 1) + torch.sum(ffm_second_order, 1) + torch.sum(x_deep, 1) + self.bias
-        elif self.use_fm:
-            total_sum = torch.sum(fm_first_order, 1) + torch.sum(fm_second_order, 1) + self.bias
+        if self.use_fm:
+            total_sum = self.bias+ torch.sum(fm_first_order,1) + torch.sum(attention_output,1)
         elif self.use_ffm:
-            total_sum = torch.sum(ffm_first_order, 1) + torch.sum(ffm_second_order, 1) + self.bias
-        else:
-            total_sum = torch.sum(x_deep,1)
+            total_sum = self.bias + torch.sum(ffm_first_order, 1) + torch.sum(attention_output, 1)
         return total_sum
 
 
@@ -535,3 +490,19 @@ class DeepFM(torch.nn.Module):
         """
         y_pred = self.inner_predict_proba(Xi, Xv)
         return self.eval_metric(y.cpu().data.numpy(), y_pred)
+
+"""
+    test part
+"""
+import sys
+sys.path.append('../')
+from utils import data_preprocess
+
+result_dict = data_preprocess.read_criteo_data('../data/train.csv', '../data/category_emb.csv')
+test_dict = data_preprocess.read_criteo_data('../data/test.csv', '../data/category_emb.csv')
+with torch.cuda.device(0):
+    afm = AFM(39, result_dict['feature_sizes'], batch_size=128 * 64, is_shallow_dropout=False, verbose=True, use_cuda=True,
+                      weight_decay=0.00002, use_fm=True, use_ffm=False).cuda()
+    afm.fit(result_dict['index'], result_dict['value'], result_dict['label'],
+            test_dict['index'], test_dict['value'], test_dict['label'], ealry_stopping=True, refit=False,
+            save_path='../data/model/afm.pkl')

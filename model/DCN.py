@@ -4,11 +4,14 @@
 Created on Dec 10, 2017
 @author: jachin,Nie
 
-A pytorch implementation of deepfm
+A pytorch implementation of NFM
 
 Reference:
-[1] DeepFM: A Factorization-Machine based Neural Network for CTR Prediction,
-    Huifeng Guo, Ruiming Tang, Yunming Yey, Zhenguo Li, Xiuqiang He.
+[1] Deep & Cross Network for Ad Click Predictions
+Ruoxi Wang,Stanford University,Stanford, CA,ruoxi@stanford.edu
+Bin Fu,Google Inc.,New York, NY,binfu@google.com
+Gang Fu,Google Inc.,New York, NY,thomasfu@google.com
+Mingliang Wang,Google Inc.,New York, NY,mlwang@google.com
 
 """
 
@@ -32,15 +35,13 @@ import torch.backends.cudnn
     网络结构部分
 """
 
-class DeepFM(torch.nn.Module):
+class DCN(torch.nn.Module):
     """
     :parameter
     -------------
     field_size: size of the feature fields
     feature_sizes: a field_size-dim array, sizes of the feature dictionary
     embedding_size: size of the feature embedding
-    is_shallow_dropout: bool, shallow part(fm or ffm part) uses dropout or not?
-    dropout_shallow: an array of the size of 2, example:[0.5,0.5], the first element is for the-first order part and the second element is for the second-order part
     h_depth: deep network's hidden layers' depth
     deep_layers: a h_depth-dim array, each element is the size of corresponding hidden layers. example:[32,32] h_depth = 2
     is_deep_dropout: bool, deep part uses dropout or not?
@@ -54,9 +55,9 @@ class DeepFM(torch.nn.Module):
     verbose: verbose
     weight_decay: weight decay (L2 penalty)
     random_seed: random_seed=950104 someone's birthday, my lukcy number
-    use_fm: bool
-    use_ffm: bool
-    use_deep: bool
+    use_cross: bool
+    use_inner_prodcut: bool
+    use_depp:bool
     loss_type: "logloss", only
     eval_metric: roc_auc_score
     use_cuda: bool use gpu or cpu?
@@ -66,23 +67,28 @@ class DeepFM(torch.nn.Module):
 
     Attention: only support logsitcs regression
     """
-    def __init__(self,field_size, feature_sizes, embedding_size = 4, is_shallow_dropout = True, dropout_shallow = [0.5,0.5],
-                 h_depth = 2, deep_layers = [32, 32], is_deep_dropout = True, dropout_deep=[0.5, 0.5, 0.5],
+    def __init__(self,field_size, feature_sizes, embedding_size = 4,
+                 h_depth = 2, deep_layers = [32, 32], is_deep_dropout = True, dropout_deep=[0.0, 0.5, 0.5],
+                 h_cross_depth = 3,
+                 h_inner_product_depth = 3, inner_product_layers = [32, 32], is_inner_product_dropout = True, dropout_inner_product_deep = [0.0, 0.5, 0.5],
                  deep_layers_activation = 'relu', n_epochs = 64, batch_size = 256, learning_rate = 0.003,
-                 optimizer_type = 'adam', is_batch_norm = False, verbose = False, random_seed = 950104, weight_decay = 0.0,
-                 use_fm = True, use_ffm = False, use_deep = True, loss_type = 'logloss', eval_metric = roc_auc_score,
+                 optimizer_type = 'adam', is_batch_norm = False, verbose = False, random_seed = 950104,
+                 use_cross = True, use_inner_product = False, use_deep = True,weight_decay = 0.0,loss_type = 'logloss', eval_metric = roc_auc_score,
                  use_cuda = True, n_class = 1, greater_is_better = True
                  ):
-        super(DeepFM, self).__init__()
+        super(DCN, self).__init__()
         self.field_size = field_size
         self.feature_sizes = feature_sizes
         self.embedding_size = embedding_size
-        self.is_shallow_dropout = is_shallow_dropout
-        self.dropout_shallow = dropout_shallow
         self.h_depth = h_depth
         self.deep_layers = deep_layers
         self.is_deep_dropout = is_deep_dropout
         self.dropout_deep = dropout_deep
+        self.h_cross_depth = h_cross_depth
+        self.h_inner_product_depth = h_inner_product_depth
+        self.inner_product_layers = inner_product_layers
+        self.is_inner_product_dropout = is_inner_product_dropout
+        self.dropout_inner_product_deep = dropout_inner_product_deep
         self.deep_layers_activation = deep_layers_activation
         self.n_epochs = n_epochs
         self.batch_size = batch_size
@@ -92,8 +98,8 @@ class DeepFM(torch.nn.Module):
         self.verbose = verbose
         self.weight_decay = weight_decay
         self.random_seed = random_seed
-        self.use_fm = use_fm
-        self.use_ffm = use_ffm
+        self.use_cross = use_cross
+        self.use_inner_product = use_inner_product
         self.use_deep = use_deep
         self.loss_type = loss_type
         self.eval_metric = eval_metric
@@ -111,82 +117,90 @@ class DeepFM(torch.nn.Module):
             print("Cuda is not available, automatically changed into cpu model")
 
         """
-            check use fm or ffm
+            check model type
         """
-        if self.use_fm and self.use_ffm:
-            print("only support one type only, please make sure to choose only fm or ffm part")
-            exit(1)
-        elif self.use_fm and self.use_deep:
-            print("The model is deepfm(fm+deep layers)")
-        elif self.use_ffm and self.use_deep:
-            print("The model is deepffm(ffm+deep layers)")
-        elif self.use_fm:
-            print("The model is fm only")
-        elif self.use_ffm:
-            print("The model is ffm only")
+        if self.use_cross and self.use_deep and self.use_inner_product:
+            print("The model is (cross network + deep network + inner_product network)")
+        elif self.use_cross and self.use_deep:
+            print("The model is (cross network + deep network)")
+        elif self.use_cross and self.use_inner_product:
+            print("The model is (cross network + inner product network)")
+        elif self.use_inner_product and self.use_deep:
+            print("The model is (inner product network + deep network)")
+        elif self.use_cross:
+            print("The model is a cross network only")
         elif self.use_deep:
-            print("The model is deep layers only")
+            print("The model is a deep network only")
+        elif self.use_inner_product:
+            print("The model is an inner product network only")
         else:
-            print("You have to choose more than one of (fm, ffm, deep) models to use")
+            print("You have to choose more than one of (cross network, deep network, inner product network) models to use")
             exit(1)
 
         """
-            bias
+            embeddings
         """
-        if self.use_fm or self.use_ffm:
-            self.bias = torch.nn.Parameter(torch.randn(1))
+        self.embeddings = nn.ModuleList([nn.Embedding(feature_size, self.embedding_size) for feature_size in self.feature_sizes])
+
+        cat_size = 0
         """
-            fm part
+            cross part
         """
-        if self.use_fm:
-            print("Init fm part")
-            self.fm_first_order_embeddings = nn.ModuleList([nn.Embedding(feature_size,1) for feature_size in self.feature_sizes])
-            if self.dropout_shallow:
-                self.fm_first_order_dropout = nn.Dropout(self.dropout_shallow[0])
-            self.fm_second_order_embeddings = nn.ModuleList([nn.Embedding(feature_size, self.embedding_size) for feature_size in self.feature_sizes])
-            if self.dropout_shallow:
-                self.fm_second_order_dropout = nn.Dropout(self.dropout_shallow[1])
-            print("Init fm part succeed")
+        if self.use_cross:
+            print("Init cross network")
+            for i in range(self.h_cross_depth):
+                setattr(self, 'cross_weight_' + str(i+1),
+                        torch.nn.Parameter(torch.randn(self.field_size*self.embedding_size)))
+                setattr(self, 'cross_bias_' + str(i + 1),
+                        torch.nn.Parameter(torch.randn(self.field_size * self.embedding_size)))
+            print("Cross network finished")
+            cat_size += self.field_size * self.embedding_size
 
         """
-            ffm part
+            inner prodcut part
         """
-        if self.use_ffm:
-            print("Init ffm part")
-            self.ffm_first_order_embeddings = nn.ModuleList([nn.Embedding(feature_size,1) for feature_size in self.feature_sizes])
-            if self.dropout_shallow:
-                self.ffm_first_order_dropout = nn.Dropout(self.dropout_shallow[0])
-            self.ffm_second_order_embeddings = nn.ModuleList([nn.ModuleList([nn.Embedding(feature_size, self.embedding_size) for i in range(self.field_size)]) for feature_size in self.feature_sizes])
-            if self.dropout_shallow:
-                self.ffm_second_order_dropout = nn.Dropout(self.dropout_shallow[1])
-            print("Init ffm part succeed")
+        if self.use_inner_product:
+            print("Init inner product network")
+            if self.is_inner_product_dropout:
+                self.inner_product_0_dropout = nn.Dropout(self.dropout_inner_product_deep[0])
+            self.inner_product_linear_1 = nn.Linear(self.field_size*(self.field_size-1)/2, self.inner_product_layers[0])
+            if self.is_inner_product_dropout:
+                self.inner_product_1_dropout = nn.Dropout(self.dropout_inner_product_deep[1])
+            if self.is_batch_norm:
+                self.inner_product_batch_norm_1 = nn.BatchNorm1d(self.inner_product_layers[0])
+
+            for i, h in enumerate(self.inner_product_layers[1:], 1):
+                setattr(self, 'inner_product_linear_' + str(i + 1), nn.Linear(self.inner_product_layers[i - 1], self.inner_product_layers[i]))
+                if self.is_batch_norm:
+                    setattr(self, 'inner_product_batch_norm_' + str(i + 1), nn.BatchNorm1d(self.inner_product_layers[i]))
+                if self.is_deep_dropout:
+                    setattr(self, 'inner_product_' + str(i + 1) + '_dropout', nn.Dropout(self.dropout_inner_product_deep[i + 1]))
+            cat_size += inner_product_layers[-1]
+            print("Inner product network finished")
 
         """
             deep part
         """
         if self.use_deep:
             print("Init deep part")
-            if not self.use_fm and not self.use_ffm:
-                self.fm_second_order_embeddings = nn.ModuleList(
-                    [nn.Embedding(feature_size, self.embedding_size) for feature_size in self.feature_sizes])
 
             if self.is_deep_dropout:
                 self.linear_0_dropout = nn.Dropout(self.dropout_deep[0])
-
-            self.linear_1 = nn.Linear(self.field_size*self.embedding_size,deep_layers[0])
+            self.linear_1 = nn.Linear(self.embedding_size*self.field_size, deep_layers[0])
             if self.is_batch_norm:
                 self.batch_norm_1 = nn.BatchNorm1d(deep_layers[0])
             if self.is_deep_dropout:
                 self.linear_1_dropout = nn.Dropout(self.dropout_deep[1])
             for i, h in enumerate(self.deep_layers[1:], 1):
-                setattr(self,'linear_'+str(i+1), nn.Linear(self.deep_layers[i-1], self.deep_layers[i]))
+                setattr(self, 'linear_' + str(i + 1), nn.Linear(self.deep_layers[i - 1], self.deep_layers[i]))
                 if self.is_batch_norm:
                     setattr(self, 'batch_norm_' + str(i + 1), nn.BatchNorm1d(deep_layers[i]))
                 if self.is_deep_dropout:
-                    setattr(self, 'linear_'+str(i+1)+'_dropout', nn.Dropout(self.dropout_deep[i+1]))
-
+                    setattr(self, 'linear_' + str(i + 1) + '_dropout', nn.Dropout(self.dropout_deep[i + 1]))
+            cat_size += deep_layers[-1]
             print("Init deep part succeed")
 
+        self.last_layer = nn.Linear(cat_size,1)
         print "Init succeed"
 
     def forward(self, Xi, Xv):
@@ -195,59 +209,62 @@ class DeepFM(torch.nn.Module):
         :param Xv_train: value input tensor, batch_size * k * 1
         :return: the last output
         """
-        """
-            fm part
-        """
-        if self.use_fm:
-            fm_first_order_emb_arr = [(torch.sum(emb(Xi[:,i,:]),1).t()*Xv[:,i]).t() for i, emb in enumerate(self.fm_first_order_embeddings)]
-            fm_first_order = torch.cat(fm_first_order_emb_arr,1)
-            if self.is_shallow_dropout:
-                fm_first_order = self.fm_first_order_dropout(fm_first_order)
 
-            # use 2xy = (x+y)^2 - x^2 - y^2 reduce calculation
-            fm_second_order_emb_arr = [(torch.sum(emb(Xi[:,i,:]),1).t()*Xv[:,i]).t() for i, emb in enumerate(self.fm_second_order_embeddings)]
-            fm_sum_second_order_emb = sum(fm_second_order_emb_arr)
-            fm_sum_second_order_emb_square = fm_sum_second_order_emb*fm_sum_second_order_emb # (x+y)^2
-            fm_second_order_emb_square = [item*item for item in fm_second_order_emb_arr]
-            fm_second_order_emb_square_sum = sum(fm_second_order_emb_square) #x^2+y^2
-            fm_second_order = (fm_sum_second_order_emb_square - fm_second_order_emb_square_sum) * 0.5
-            if self.is_shallow_dropout:
-                fm_second_order = self.fm_second_order_dropout(fm_second_order)
+        if self.deep_layers_activation == 'sigmoid':
+            activation = F.sigmoid
+        elif self.deep_layers_activation == 'tanh':
+            activation = F.tanh
+        else:
+            activation = F.relu
 
         """
-            ffm part
+            embeddings
         """
-        if self.use_ffm:
-            ffm_first_order_emb_arr = [(torch.sum(emb(Xi[:,i,:]),1).t()*Xv[:,i]).t() for i, emb in enumerate(self.ffm_first_order_embeddings)]
-            ffm_first_order = torch.cat(ffm_first_order_emb_arr,1)
-            if self.is_shallow_dropout:
-                ffm_first_order = self.ffm_first_order_dropout(ffm_first_order)
-            ffm_second_order_emb_arr = [[(torch.sum(emb(Xi[:,i,:]), 1).t() * Xv[:,i]).t() for emb in  f_embs] for i, f_embs in enumerate(self.ffm_second_order_embeddings)]
-            ffm_wij_arr = []
+        emb_arr = [(torch.sum(emb(Xi[:,i,:]),1).t()*Xv[:,i]).t() for i, emb in enumerate(self.embeddings)]
+        outputs = []
+        """
+            cross part
+        """
+        if self.use_cross:
+            x_0 = torch.cat(emb_arr,1)
+            x_l = x_0
+            for i in range(self.h_cross_depth):
+                x_l = torch.sum(x_0 * x_l, 1).view([-1,1]) * getattr(self,'cross_weight_'+str(i+1)).view([1,-1]) + getattr(self,'cross_bias_'+str(i+1)) + x_l
+            outputs.append(x_l)
+
+        """
+            inner product part
+        """
+        if self.use_inner_product:
+            fm_wij_arr = []
             for i in range(self.field_size):
-                for j in range(i+1, self.field_size):
-                    ffm_wij_arr.append(ffm_second_order_emb_arr[i][j]*ffm_second_order_emb_arr[j][i])
-            ffm_second_order = sum(ffm_wij_arr)
-            if self.is_shallow_dropout:
-                ffm_second_order = self.ffm_second_order_dropout(ffm_second_order)
+                for j in range(i + 1, self.field_size):
+                    fm_wij_arr.append(torch.sum(emb_arr[i] * emb_arr[j],1).view([-1,1]))
+            inner_output = torch.cat(fm_wij_arr,1)
+
+            if self.is_inner_product_dropout:
+                deep_emb = self.inner_product_0_dropout(inner_output)
+            x_deep = self.inner_product_linear_1(deep_emb)
+            if self.is_batch_norm:
+                x_deep = self.inner_product_batch_norm_1(x_deep)
+            x_deep = activation(x_deep)
+            if self.is_inner_product_dropout:
+                x_deep = self.inner_product_1_dropout(x_deep)
+            for i in range(1, len(self.deep_layers)):
+                x_deep = getattr(self, 'inner_product_linear_' + str(i + 1))(x_deep)
+                if self.is_batch_norm:
+                    x_deep = getattr(self, 'inner_product_batch_norm_' + str(i + 1))(x_deep)
+                x_deep = activation(x_deep)
+                if self.is_deep_dropout:
+                    x_deep = getattr(self, 'inner_product_' + str(i + 1) + '_dropout')(x_deep)
+            outputs.append(x_deep)
 
         """
             deep part
         """
         if self.use_deep:
-            if self.use_fm:
-                deep_emb = torch.cat(fm_second_order_emb_arr, 1)
-            elif self.use_ffm:
-                deep_emb = torch.cat([sum(ffm_second_order_embs) for ffm_second_order_embs in ffm_second_order_emb_arr], 1)
-            else:
-                deep_emb = torch.cat([(torch.sum(emb(Xi[:,i,:]),1).t()*Xv[:,i]).t() for i, emb in enumerate(self.fm_second_order_embeddings)],1)
+            deep_emb = torch.cat(emb_arr,1)
 
-            if self.deep_layers_activation == 'sigmoid':
-                activation = F.sigmoid
-            elif self.deep_layers_activation == 'tanh':
-                activation = F.tanh
-            else:
-                activation = F.relu
             if self.is_deep_dropout:
                 deep_emb = self.linear_0_dropout(deep_emb)
             x_deep = self.linear_1(deep_emb)
@@ -263,20 +280,13 @@ class DeepFM(torch.nn.Module):
                 x_deep = activation(x_deep)
                 if self.is_deep_dropout:
                     x_deep = getattr(self, 'linear_' + str(i + 1) + '_dropout')(x_deep)
+            outputs.append(x_deep)
+
         """
-            sum
+            total
         """
-        if self.use_fm and self.use_deep:
-            total_sum = torch.sum(fm_first_order,1) + torch.sum(fm_second_order,1) + torch.sum(x_deep,1) + self.bias
-        elif self.use_ffm and self.use_deep:
-            total_sum = torch.sum(ffm_first_order, 1) + torch.sum(ffm_second_order, 1) + torch.sum(x_deep, 1) + self.bias
-        elif self.use_fm:
-            total_sum = torch.sum(fm_first_order, 1) + torch.sum(fm_second_order, 1) + self.bias
-        elif self.use_ffm:
-            total_sum = torch.sum(ffm_first_order, 1) + torch.sum(ffm_second_order, 1) + self.bias
-        else:
-            total_sum = torch.sum(x_deep,1)
-        return total_sum
+        output = self.last_layer(torch.cat(outputs,1))
+        return torch.sum(output,1)
 
 
     def fit(self, Xi_train, Xv_train, y_train, Xi_valid=None, Xv_valid=None,
@@ -430,10 +440,7 @@ class DeepFM(torch.nn.Module):
     def eval_by_batch(self,Xi, Xv, y, x_size):
         total_loss = 0.0
         y_pred = []
-        if self.use_ffm:
-            batch_size = 16384*2
-        else:
-            batch_size = 16384
+        batch_size = 16384
         batch_iter = x_size // batch_size
         criterion = F.binary_cross_entropy_with_logits
         model = self.eval()
@@ -535,3 +542,19 @@ class DeepFM(torch.nn.Module):
         """
         y_pred = self.inner_predict_proba(Xi, Xv)
         return self.eval_metric(y.cpu().data.numpy(), y_pred)
+
+"""
+    test part
+"""
+import sys
+sys.path.append('../')
+from utils import data_preprocess
+
+result_dict = data_preprocess.read_criteo_data('../data/train.csv', '../data/category_emb.csv')
+test_dict = data_preprocess.read_criteo_data('../data/test.csv', '../data/category_emb.csv')
+with torch.cuda.device(0):
+    dcn = DCN(39, result_dict['feature_sizes'], batch_size=128 * 32, verbose=True, use_cuda=True,
+                      weight_decay=0.00002, use_inner_product=True).cuda()
+    dcn.fit(result_dict['index'], result_dict['value'], result_dict['label'],
+            test_dict['index'], test_dict['value'], test_dict['label'], ealry_stopping=True, refit=False,
+            save_path='../data/model/dcn.pkl')
