@@ -70,7 +70,7 @@ class DCN(torch.nn.Module):
     def __init__(self,field_size, feature_sizes, embedding_size = 4,
                  h_depth = 2, deep_layers = [32, 32], is_deep_dropout = True, dropout_deep=[0.0, 0.5, 0.5],
                  h_cross_depth = 3,
-                 h_inner_product_depth = 3, inner_product_layers = [32, 32], is_inner_product_dropout = True, dropout_inner_product_deep = [0.0, 0.5, 0.5],
+                 h_inner_product_depth = 2, inner_product_layers = [32, 32], is_inner_product_dropout = True, dropout_inner_product_deep = [0.0, 0.5, 0.5],
                  deep_layers_activation = 'relu', n_epochs = 64, batch_size = 256, learning_rate = 0.003,
                  optimizer_type = 'adam', is_batch_norm = False, verbose = False, random_seed = 950104,
                  use_cross = True, use_inner_product = False, use_deep = True,weight_decay = 0.0,loss_type = 'logloss', eval_metric = roc_auc_score,
